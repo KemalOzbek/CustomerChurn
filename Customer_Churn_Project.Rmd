@@ -1,0 +1,424 @@
+---
+title: "FEM11152 - Individual Assignment Week 3: Case B"
+author: "Kemal Ozbek - 692000"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: true
+header-includes:
+   - "\\usepackage{fancyhdr}"
+   - "\\usepackage{titling}"
+   - "\\setlength{\\droptitle}{-1cm}"
+   - "\\pretitle{\\begin{center}\\large\\vspace{-1cm}}"
+   - "\\posttitle{\\end{center}}"
+   - "\\preauthor{\\begin{center}\\large}"
+   - "\\postauthor{\\end{center}\\vspace{-1.5cm}}"
+   - "\\pagestyle{fancy}"
+   - "\\fancyhead{}"
+   - "\\fancyhead[R]{2023-11-16}"
+   - "\\renewcommand{\\headrulewidth}{0pt}"
+   - "\\renewcommand{\\footrulewidth}{0pt}"
+   - "\\renewcommand{\\refname}{\\normalsize References}"
+bibliography: references.bib
+reference-section-title: References
+---
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+# Library check
+library(ltm)
+library(vcd)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(caretEnsemble)
+library(ggcorrplot)
+library(tidyverse)
+library(e1071)
+library(cluster)
+library(mclust)
+library(caret)
+library(naivebayes)
+library(patchwork)
+library(pROC)
+```
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results = 'hide'}
+# Data pre-processing 
+load("JobChanges.RData")
+dim(data)
+head(data)
+str(data)
+summary(data)
+```
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results = 'hide'}
+## Data manipulation
+categorize_experience <- function(experience) {
+  if (experience <= 2) {
+    return("Junior")
+  } else if (experience <= 5) {
+    return("Mid-level")
+  } else if (experience <= 10) {
+    return("Senior")
+  } else if (experience <= 20) {
+    return("Manager")
+  } else {
+    return("Executive")
+  }
+}
+data$experience <- factor(sapply(data$experience, categorize_experience), 
+                                   levels = c("Junior", "Mid-level", "Senior",
+                                              "Manager", "Executive"))
+
+rebin_company_size <- function(size) {
+  if (size %in% c("<10", "10-49")) {
+    return("0-49")
+  } else if (size %in% c("50-99")) {
+    return("50-99")
+  } else if (size %in% c("100-500")) {
+    return("100-500")
+  } else if (size %in% c("500-999", "1000-4999")) {
+    return("500-9999")
+  } else {
+    return("10000+")
+  }
+}
+data$company_size <- factor(sapply(data$company_size, rebin_company_size),
+                            levels = c("0-49", "50-99", "100-500", 
+                                       "500-9999", "10000+"))
+
+# Checking the distribution for each categorical variable
+contingency_table_gender <- table(data$gender)
+contingency_table_relevant_experience <- table(data$relevant_experience)
+contingency_table_education_level <- table(data$education_level)
+contingency_table_major_discipline <- table(data$major_discipline)
+contingency_table_company_type <- table(data$company_type)
+
+# Cramér's V & Chi-Squared Test
+cramers_v <- function(x, y) {
+  table <- table(x, y)
+  chi_sq <- chisq.test(table)
+  n <- sum(table)
+  phi_sq <- chi_sq$statistic / n
+  r <- nrow(table) - 1
+  k <- ncol(table) - 1
+  min <- min(r, k)
+  v <- sqrt(phi_sq / (min * (n - 1)))
+  p_value <- chi_sq$p.value
+  return(c("Cramer's V" = v, "p-value" = p_value))
+}
+variable_combinations <- combn(names(data)[sapply(data, is.factor)], 2)
+
+cramers_results <- apply(variable_combinations, 2, function(vars) {
+  cat_vars <- lapply(vars, function(var_name) data[[var_name]])
+  cramer_v_and_p_value <- do.call(cramers_v, cat_vars)
+  return(cramer_v_and_p_value)
+})
+cramers_results_df <- as.data.frame(t(cramers_results))
+colnames(cramers_results_df) <- c("Cramer's V", "p-value")
+rownames(cramers_results_df) <- apply(variable_combinations, 2, paste,
+                                      collapse = " & ")
+print(cramers_results_df)
+```
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, results = 'hide'}
+## Application of the Naïve Bayes
+set.seed(123)
+trainRowNumber <- createDataPartition(data$target, p = 0.7, list = FALSE)
+train_data <- data[trainRowNumber, ]
+test_data <- data[-trainRowNumber, ]
+
+model <- naiveBayes(target ~ ., data = train_data)
+
+predictions <- predict(model, test_data)
+
+pred_prob <- prop.table(table(predictions))
+
+confusionMatrix(table(predictions, test_data$target), positive = "1")
+
+predicted_probabilities <- predict(model, newdata = test_data, type = "raw")
+
+probabilities_switch_job <- predicted_probabilities[, 2]
+
+test_data_with_probs <- cbind(test_data, probabilities_switch_job)
+```
+
+**Introduction**
+
+In today's evolving world, one of the ever-growing industries is the field of data science. For the companies, acquiring certain talents in a highly competitive sector is a critical challenge. The first idea while determining these talents is evaluating their related skills. However, in this case, while targeting the candidates, another aspect that can improve the decision making process is candidates’ probability of switching jobs, which is a strategic necessity. This report will go through a predictive analysis by using a Naïve Bayes classification model, which is a popular machine learning technique, to address this challenge. The dataset used in this report is obtained from a company that has acquired the job change decisions of 2,000 employees who were reached by this company in the past. The purpose of this report is to analyze this given data to predict and determine which of the data scientist have higher probability to change jobs. These prediction results can be highly significant for a company’s human resources department to have better targeting performance in the recruitment process.
+
+**Method**
+
+Naïve Bayes is a supervised probabilistic classification model based on applying Bayes' theorem. Bayes' Theorem is a probability theory that articulated as \( P(Y|X) = \frac{P(X|Y) \times P(Y)}{P(X)} \), where \( P(Y|X) \) represents the posterior probability, which is the probability of the hypothesis \( Y \) being true given the evidence \( X \). The term \( P(X|Y) \) is the likelihood, indicating the probability of observing the evidence \( X \) if the hypothesis \( Y \) is true. The \( P(Y) \) is known as the prior probability, reflecting the initial probability of the hypothesis \( Y \) before considering the evidence. Lastly, \( P(X) \) is the marginal probability of the evidence \( X \), which is the probability of observing the evidence under all possible hypotheses.[@PRML]
+
+Like the other machine learning models, this method also uses training data and learn the probability of a certain class membership of each independent feature by considering them independently. When applied to new data, this class membership is assigned to the category considered to be most likely according to the joint probabilities assigned by the combination of predictors. The naïve part of this model comes from the fundamental assumption of independence between the features that are used to calculate the probability of certain class membership. Validating this assumption simplifies the computation process by eliminating the risk of variables’ potential influence on each other, especially in larger datasets. Aside from the key assumption of independence, the Naive Bayes model operates under a few more assumptions. First one is related to data distribution, there are different types of Naive Bayes classifications which differ in terms of their assumption regarding the data distributions. If a dataset includes all numeric variables, the Naïve Bayes assumes that these continuous variables have a Gaussian(normal) distribution. If the dataset contains only discrete, categorical variables, which means the Naïve Bayes presumes that the data is multinomially distributed. Additionally, if a dataset consists of only binary variables, the model supposes that the data has Bernoulli distribution. The second assumption other than the independence is about the imbalance in the data. If the model is highly imbalanced, the model can have a prior belief about which category is more common in the dataset and this is called “Class Prior Probabilities”. Throughout the analysis, it is required to check and mitigate the potential bias in a Naive Bayes model due to class imbalance. Third one is about the sample size; even if our case includes categorical variables, normally the model assumes there is sufficient amount of data to estimate certain parameters like mean and variance for Gaussian distribution. The fourth one is for the relevancy, which means the variables being used in the process of analysis is relevant for probability calculation and then for the prediction. The fifth assumption is related to data quality, meaning the model assumes that there is no missing values or errors in the data. Even it assumes it this way, before applying the model these possible issues need to be handled.
+
+In practice, despite these assumptions, Naive Bayes can perform quite well even when some of them are violated. Its simplicity and efficiency make it a popular choice for the areas where the independence assumption roughly holds or the feature space is large and diverse. However, it's always good to be aware of these assumptions when interpreting the results or comparing with other models.
+\newpage
+
+**Data preprocessing**
+
+The examined dataset includes 9 variables in total, 1 of them is our target variable that represents the change of job (1) or not (0). From the other 8 variables, 7 of them are categorical variables and just the variable “experience” is numeric. As a numeric variable, experience does not have a normal distribution. To decrease the risk of violating the normality assumption and a have fully categorical, multinomially distributed dataset, it needs to be logically grouped into bins and converted to a categorical variable. Therefore, data scientists with respective years of experiences are grouped into bins and named as Junior, Mid-level, Senior, Manager and Executive. With this way, each bin for experience becomes a category, and the count of individuals in each bin fits the multinomial model as now all the variables in the dataset become discrete and categorical. There is another, to some extent, numeric variable that is named company_size. Since its already a grouped factor variable, only the distribution is checked. Then it is seen that, the already prepared intervals created an imbalanced distribution. To solve this, the entries for this variable are regrouped to have a more balanced distribution. As doing this, the bins <10 and 10-49, 500-999 and 1000-4999 are combined. Additionally, the balance in the other categorical variables such as gender, relevant_experience, education_level, major_discipline and company_type is controlled in the preprocessing part. As a result, it is observed that most of the candidates questioned to gather the provided information are male, graduate but without another degree, has a major discipline from STEM (science, technology, engineering and mathematics), and works in a private limited company as a data scientist. Even all these variables have some kind of imbalance that can create a class prior probability, according to our domain knowledge these imbalances are normal in this context. To check the independence of the features used in this analysis, the relationship is analyzed by the Chi-squared test and Cramér's V value. Chi-squared test assess the significance of the association between two categorical variables, it tests the hypothesis that there is no relationship between these two categorical variables tested. If the test can be rejected, it can be said that they are dependent and there is a relationship between them. On the other hand, Cramér's V is evaluating the strength of relationship between two categorical variables. It uses Chi-squared statistic from the Chi-squared test of independence. The results of Cramér's V measures for each categorical variable association are close to 0. Even if some of the associations are significant according to their p-value, this suggest that there is a weak association between variables, meaning that it is favorable for the independency assumption of the Naïve Bayes.
+
+**Application and Results**
+
+Firstly, the data is splitted into training and test data with the proportions of 70% and 30% to train and assess the prediction performance of the model. To start observing the prediction process, the frequencies of the predicted classes is checked. It can seen that 50.05% of the predictions are assigned to class 0 and about 49.95% of the predictions are assigned to class 1. This distribution supports that the model does not favor one class over the other. To evaluate the performance with the focus on the group that switched jobs (class 1), confusion matrix is created for the positive class 1. According to the performance metrics of the model, it correctly predicted 68.17% of all results. In addition, the No Information Rate (NIR) at 0.55 indicates if the model always predicts the most frequent class a result, '0' in this case, it would be correct 55% of the time. With the computed p-value of the model equal to 3.121e-11, it is understood that model better performs and there is a significant difference between the model's accuracy and NIR (68% vs 55%). Further, Cohen’s Kappa statistics is examined and at 0.3627 level indicates a fair agreement is reached after the classification process. In terms of sensitivity and specificity of the model, sensitivity suggests that 69.63% of the positive instances are predicted correct and specificity shows that 66.97% of the negative instances are correctly predicted. To summarize the results of confusion matrix, the model operates well to distinguish candidates' decision regarding changing their jobs. In order to illustrate this, the model's performance is examined by plotting the ROC curve, and the resulting AUC (Area Under the ROC Curve) = 0.744 suggests that the model has a high probability of differentiating between the two classes. After evaluating the performance of the model as whole, to make more detailed recommendations to the company, the predicted probabilities of switching jobs for each candidate is added to the test dataset. Then each of the categorical variable is plotted against the probabilities for determining which particular levels in each variable have higher probabilities of changing jobs. It can be provided as a suggestion from the prepared boxplots (Appendix A) that, candidates who have 0-2 years of experience (Junior), currently works in an Early-Stage Startup and if the current job is his/her first job, have higher probabilities (around 75%) of switching jobs. [@RFM]
+
+\newpage
+
+**Appendix A**
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE, fig.height=10, fig.width=8}
+get_color <- function(median_prob) {
+  if (median_prob > 0.72) {
+    return("green")
+  } else if (median_prob > 0.33) {
+    return("yellow")
+  } else {
+    return("red")
+  }
+}
+
+median_probs_experience <- test_data_with_probs %>%
+  group_by(experience) %>%
+  summarize(median_prob = median(probabilities_switch_job)) %>%
+  mutate(color_experience = sapply(median_prob, get_color))
+
+median_probs_company_type <- test_data_with_probs %>%
+  group_by(company_type) %>%
+  summarize(median_prob = median(probabilities_switch_job)) %>%
+  mutate(color_company_type = sapply(median_prob, get_color))
+
+median_probs_last_new_job <- test_data_with_probs %>%
+  group_by(last_new_job) %>%
+  summarize(median_prob = median(probabilities_switch_job)) %>%
+  mutate(color_last_new_job = sapply(median_prob, get_color))
+
+test_data_with_probs <- test_data_with_probs %>%
+  left_join(median_probs_experience, by = "experience") %>%
+  left_join(median_probs_company_type, by = "company_type") %>%
+  left_join(median_probs_last_new_job, by = "last_new_job")
+
+test_data_with_probs <- test_data_with_probs %>%
+  mutate(color_experience = as.character(color_experience))
+
+# experience vs predicted probabilities
+plot1 <- ggplot(test_data_with_probs, aes(x = experience, 
+                                          y = probabilities_switch_job, 
+                                          fill = color_experience)) + 
+  geom_boxplot() + 
+  labs(title = "Relationship between Experience and Prob of Switching Jobs")+
+  scale_fill_identity()
+
+
+# company_type and predicted probabilities
+plot2 <- ggplot(test_data_with_probs, aes(x = company_type, 
+                                          y = probabilities_switch_job, 
+                                          fill = color_company_type)) +
+  geom_boxplot() +
+  labs(title = "Relationship between Company Type and Prob of Switching Jobs")+
+  scale_fill_identity()
+
+# last_new_job vs predicted probabilities
+plot3 <- ggplot(test_data_with_probs, aes(x = last_new_job, 
+                                          y = probabilities_switch_job, 
+                                          fill = color_last_new_job)) +
+  geom_boxplot() +
+  labs(title = "Relationship between Last-New Job and Prob of Switching Jobs")+
+  scale_fill_identity()
+
+combined_plot <- plot1 / plot2 / plot3 & theme(legend.position = "none")
+combined_plot
+```
+
+\newpage
+
+
+**Appendix B**
+
+```{r eval = TRUE, echo = FALSE, message = FALSE, warning = FALSE}
+# Library check
+library(ltm)
+library(vcd)
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(caretEnsemble)
+library(ggcorrplot)
+library(tidyverse)
+library(e1071)
+library(cluster)
+library(mclust)
+library(caret)
+library(naivebayes)
+library(patchwork)
+library(pROC)
+```
+
+```{r eval = TRUE, echo = TRUE, message = FALSE, warning = FALSE, results = 'hide'}
+# Data pre-processing 
+load("JobChanges.RData")
+dim(data)
+head(data)
+str(data)
+summary(data)
+```
+
+```{r eval = TRUE, echo = TRUE, message = FALSE, warning = FALSE, results = 'hide'}
+## Data manipulation
+categorize_experience <- function(experience) {
+  if (experience <= 2) {
+    return("Junior")
+  } else if (experience <= 5) {
+    return("Mid-level")
+  } else if (experience <= 10) {
+    return("Senior")
+  } else if (experience <= 20) {
+    return("Manager")
+  } else {
+    return("Executive")
+  }
+}
+data$experience <- factor(sapply(data$experience, categorize_experience), 
+                                   levels = c("Junior", "Mid-level", "Senior",
+                                              "Manager", "Executive"))
+
+rebin_company_size <- function(size) {
+  if (size %in% c("<10", "10-49")) {
+    return("0-49")
+  } else if (size %in% c("50-99")) {
+    return("50-99")
+  } else if (size %in% c("100-500")) {
+    return("100-500")
+  } else if (size %in% c("500-999", "1000-4999")) {
+    return("500-9999")
+  } else {
+    return("10000+")
+  }
+}
+data$company_size <- factor(sapply(data$company_size, rebin_company_size),
+                            levels = c("0-49", "50-99", "100-500", 
+                                       "500-9999", "10000+"))
+
+# Checking the distribution for each categorical variable
+contingency_table_gender <- table(data$gender)
+contingency_table_relevant_experience <- table(data$relevant_experience)
+contingency_table_education_level <- table(data$education_level)
+contingency_table_major_discipline <- table(data$major_discipline)
+contingency_table_company_type <- table(data$company_type)
+
+# Cramér's V & Chi-Squared Test
+cramers_v <- function(x, y) {
+  table <- table(x, y)
+  chi_sq <- chisq.test(table)
+  n <- sum(table)
+  phi_sq <- chi_sq$statistic / n
+  r <- nrow(table) - 1
+  k <- ncol(table) - 1
+  min <- min(r, k)
+  v <- sqrt(phi_sq / (min * (n - 1)))
+  p_value <- chi_sq$p.value
+  return(c("Cramer's V" = v, "p-value" = p_value))
+}
+variable_combinations <- combn(names(data)[sapply(data, is.factor)], 2)
+
+cramers_results <- apply(variable_combinations, 2, function(vars) {
+  cat_vars <- lapply(vars, function(var_name) data[[var_name]])
+  cramer_v_and_p_value <- do.call(cramers_v, cat_vars)
+  return(cramer_v_and_p_value)
+})
+cramers_results_df <- as.data.frame(t(cramers_results))
+colnames(cramers_results_df) <- c("Cramer's V", "p-value")
+rownames(cramers_results_df) <- apply(variable_combinations, 2, paste,
+                                      collapse = " & ")
+print(cramers_results_df)
+```
+
+```{r eval = TRUE, echo = TRUE, message = FALSE, warning = FALSE, results = 'hide'}
+## Application of the Naïve Bayes
+set.seed(123)
+trainRowNumber <- createDataPartition(data$target, p = 0.7, list = FALSE)
+train_data <- data[trainRowNumber, ]
+test_data <- data[-trainRowNumber, ]
+
+model <- naiveBayes(target ~ ., data = train_data)
+
+predictions <- predict(model, test_data)
+
+pred_prob <- prop.table(table(predictions))
+
+confusionMatrix(table(predictions, test_data$target), positive = "1")
+
+predicted_probabilities <- predict(model, newdata = test_data, type = "raw")
+
+probabilities_switch_job <- predicted_probabilities[, 2]
+
+test_data_with_probs <- cbind(test_data, probabilities_switch_job)
+```
+
+```{r eval = FALSE, echo = TRUE, message = FALSE, warning = FALSE, fig.height=10, fig.width=8, results = 'hide'}
+#Plots
+get_color <- function(median_prob) {
+  if (median_prob > 0.72) {
+    return("green")
+  } else if (median_prob > 0.33) {
+    return("yellow")
+  } else {
+    return("red")
+  }
+}
+
+median_probs_experience <- test_data_with_probs %>%
+  group_by(experience) %>%
+  summarize(median_prob = median(probabilities_switch_job)) %>%
+  mutate(color_experience = sapply(median_prob, get_color))
+
+median_probs_company_type <- test_data_with_probs %>%
+  group_by(company_type) %>%
+  summarize(median_prob = median(probabilities_switch_job)) %>%
+  mutate(color_company_type = sapply(median_prob, get_color))
+
+median_probs_last_new_job <- test_data_with_probs %>%
+  group_by(last_new_job) %>%
+  summarize(median_prob = median(probabilities_switch_job)) %>%
+  mutate(color_last_new_job = sapply(median_prob, get_color))
+
+test_data_with_probs <- test_data_with_probs %>%
+  left_join(median_probs_experience, by = "experience") %>%
+  left_join(median_probs_company_type, by = "company_type") %>%
+  left_join(median_probs_last_new_job, by = "last_new_job")
+
+test_data_with_probs <- test_data_with_probs %>%
+  mutate(color_experience = as.character(color_experience))
+
+plot1 <- ggplot(test_data_with_probs, aes(x = experience, 
+                                          y = probabilities_switch_job, 
+                                          fill = color_experience)) + 
+  geom_boxplot() + 
+  labs(title = "Relationship between Company Type and Prob of Switching Jobs")+
+  scale_fill_identity()
+
+plot2 <- ggplot(test_data_with_probs, aes(x = company_type, 
+                                          y = probabilities_switch_job, 
+                                          fill = color_company_type)) +
+  geom_boxplot() +
+  labs(title = "Relationship between Company Type and Prob of Switching Jobs")+
+  scale_fill_identity()
+
+plot3 <- ggplot(test_data_with_probs, aes(x = last_new_job, 
+                                          y = probabilities_switch_job, 
+                                          fill = color_last_new_job)) +
+  geom_boxplot() +
+  labs(title = "Relationship between Last-New Job and Prob of Switching Jobs")+
+  scale_fill_identity()
+
+combined_plot <- plot1 / plot2 / plot3 & theme(legend.position = "none")
+
+# ROC Curve
+roc_curve <- roc(test_data$target, predicted_probabilities[, 2])
+plot(roc_curve, main = "Figure 1. ROC Curve", col = "midnightblue", lwd = 2)
+text(0.7, 0.3, paste("AUC =", round(roc_curve$auc, 3)), cex = 1)
+```
+
+\newpage
+
